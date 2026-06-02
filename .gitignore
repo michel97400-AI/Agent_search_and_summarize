@@ -1,3 +1,7 @@
+# Profil utilisateur et notes sauvegardées
+user_profile.json
+notes/
+
 # Environments
 .venv/
 venv/

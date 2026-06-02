@@ -1,4 +1,5 @@
 import requests
+from memory_notes import save_note, search_notes, list_notes
 
 # ── Définition JSON de l'outil pour le LLM ────────────────────────────────────
 TOOLS_LIST = [
@@ -24,7 +25,23 @@ TOOLS_LIST = [
                 "additionalProperties": False
             }
         }
+    },
+    {
+    "type": "function",
+    "function": {
+        "name": "save_note",
+        "description": "Sauvegarde une note utilisateur dans un fichier local.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string"},
+                "content": {"type": "string"},
+                "tags": {"type": "array", "items": {"type": "string"}}
+            },
+            "required": ["title", "content"]
+        }
     }
+}
     
 ]
 
@@ -35,7 +52,7 @@ def search_web(query, num_results=5):
         try:
             from ddgs import DDGS
         except ImportError:
-            return f"❌ Module ddgs non installé. Installe-le avec: pip install ddgs"
+            return f"❌ Module ddgs non installé. Installe-le avec: pip install duckduckgo-search"
         
         # Utiliser DuckDuckGo qui est plus permissif que Google
         ddgs = DDGS()
@@ -43,12 +60,14 @@ def search_web(query, num_results=5):
         # Effectuer la recherche en français (région France)
         results = list(ddgs.text(query, region='fr-fr', max_results=num_results))
         
+        print(f"DEBUG search_web: Trouvé {len(results)} résultats")
+        
         if not results:
             return f"❌ Aucun résultat trouvé pour '{query}'"
         
         # Formater les résultats
         output = f"🔍 Résultats de recherche pour '{query}':\n\n"
-        for i, result in enumerate(results, 5):
+        for i, result in enumerate(results, 1):
             title = result.get('title', 'Sans titre')
             url = result.get('href', '#')
             body = result.get('body', 'Pas de description')
@@ -60,7 +79,67 @@ def search_web(query, num_results=5):
         return output
     
     except Exception as e:
+        print(f"DEBUG search_web error: {type(e).__name__}: {str(e)}")
         return f"❌ Erreur lors de la recherche web: {str(e)}"
+
+def explore_website(domain_url, query_words):
+    """Explore un site web pour trouver du contenu pertinent.
+    Essaie le sitemap, puis les pages principales comme /team/, /about/, etc."""
+    try:
+        from urllib.parse import urljoin, urlparse
+        from bs4 import BeautifulSoup
+        
+        print(f"DEBUG: Exploration du site {domain_url}...")
+        
+        # Extraire le domaine
+        parsed = urlparse(domain_url)
+        domain = f"{parsed.scheme}://{parsed.netloc}"
+        
+        # Essai 1: Chercher le sitemap.xml
+        urls_to_check = []
+        try:
+            sitemap_url = f"{domain}/sitemap.xml"
+            response = requests.get(sitemap_url, timeout=10)
+            if response.status_code == 200:
+                print(f"DEBUG: Sitemap trouvé !")
+                soup = BeautifulSoup(response.text, 'xml')
+                for loc in soup.find_all('loc'):
+                    urls_to_check.append(loc.text)
+        except:
+            pass
+        
+        # Essai 2: Pages communes
+        common_pages = [
+            '/team', '/equipe', '/about', '/a-propos', '/qui-sommes-nous',
+            '/management', '/dirigeants', '/leadership', '/contact',
+            '/societe', '/presentation', '/our-team', '/staff'
+        ]
+        
+        for page in common_pages:
+            urls_to_check.append(urljoin(domain, page))
+        
+        # Parcourir les URLs trouvées
+        for url in urls_to_check[:15]:  # Limiter à 15 pages
+            try:
+                print(f"DEBUG: Exploration {url}...")
+                content = fetch_webpage(url)
+                
+                if "❌" not in content:
+                    # Vérifier la pertinence
+                    content_lower = content.lower()
+                    match_count = sum(1 for word in query_words if word in content_lower)
+                    
+                    if match_count >= max(1, len(query_words) // 2):
+                        print(f"DEBUG: Page pertinente trouvée !")
+                        return (content, url)
+            except:
+                continue
+        
+        return None
+    
+    except Exception as e:
+        print(f"DEBUG explore_website: {e}")
+        return None
 
 def fetch_webpage(url):
     """Récupère et extrait le contenu textuel d'une page web avec Trafilatura."""
@@ -108,56 +187,88 @@ def fetch_webpage(url):
         return f"❌ Erreur lors de la récupération de la page: {e}"
 
 def search_and_summarize(query):
-    """Recherche sur le web et extrait le contenu en texte de la page la plus pertinente."""
+    """Recherche sur le web et extrait le contenu en texte de la page la plus pertinente.
+    Escalade progressive : essaie 10 résultats, puis explore les sites en profondeur."""
     try:
-        # D'abord, faire une recherche avec plusieurs résultats
-        search_results = search_web(query, num_results=5)
-        
-        if "❌" in search_results or "⚠️" in search_results:
-            return search_results
-        
-        # Extraire toutes les URLs et titres des résultats
-        import re
-        urls = re.findall(r'🔗 (https?://[^\s\)]+)', search_results)
-        titles = re.findall(r'\*\*([^*]+)\*\*', search_results)
-        
-        if not urls:
-            return search_results  # Retourner juste les résultats si pas d'URL
-        
-        # Trouver la page la plus pertinente (correspondance avec la query)
-        query_words = query.lower().split()
-        best_url = urls[0]
-        best_score = 0
-        
-        for i, (url, title) in enumerate(zip(urls, titles)):
-            title_lower = title.lower()
-            # Score basé sur les mots de la query présents dans le titre
-            score = sum(1 for word in query_words if word in title_lower)
-            # Bonus si le titre commence par un mot de la query
-            if any(title_lower.startswith(word) for word in query_words):
-                score += 2
-            # Bonus pour Wikipedia (généralement plus fiable)
-            if "wikipedia" in url.lower():
-                score += 1
-            # Pénalité pour les pages qui semblent être des variantes (III, Jr, etc.)
-            if any(x in title for x in [" III", " II", " Jr", " Sr", "frère", "fils", "neveu"]):
-                if not any(x in query for x in ["III", "II", "Jr", "frère", "fils", "neveu"]):
-                    score -= 2
+        # Escalade progressive des résultats (commencer par 10)
+        for num_results in [10, 20]:
+            print(f"DEBUG: Tentative avec {num_results} résultats...")
+            search_results = search_web(query, num_results=num_results)
             
-            if score > best_score:
-                best_score = score
-                best_url = url
+            if "❌" in search_results:
+                if num_results < 20:
+                    continue  # Essayer avec plus de résultats
+                else:
+                    return search_results
+            
+            # Extraire toutes les URLs des résultats
+            import re
+            urls = re.findall(r'🔗 (https?://[^\s\)]+)', search_results)
+            print(f"DEBUG: Trouvé {len(urls)} URLs")
+            
+            if not urls:
+                if num_results < 20:
+                    continue  # Essayer avec plus de résultats
+                return search_results  # Retourner juste les résultats si pas d'URL
+            
+            # Essayer chaque URL jusqu'à trouver du contenu pertinent
+            query_words = [w for w in query.lower().split() if len(w) > 2]
+            best_content = None
+            best_url = None
+            
+            for idx, url in enumerate(urls):
+                print(f"Extraction contenu de {url} ({idx+1}/{len(urls)})...")
+                try:
+                    content = fetch_webpage(url)
+                    if "❌" not in content:  # Si le contenu a été extrait
+                        print(f"Contenu extrait avec succès")
+                        # Vérifier si le contenu contient les mots-clés de la query
+                        content_lower = content.lower()
+                        match_count = sum(1 for word in query_words if word in content_lower)
+                        
+                        print(f"DEBUG: {match_count}/{len(query_words)} mots-clés trouvés")
+                        
+                        # Si au moins la moitié des mots-clés sont trouvés, c'est bon
+                        if match_count >= max(1, len(query_words) // 2):
+                            best_content = content
+                            best_url = url
+                            print(f"Contenu pertinent trouvé !")
+                            break
+                        else:
+                            # Pas pertinent sur cette page, explorer le site en profondeur
+                            print(f"Page non pertinente, exploration du site...")
+                            result = explore_website(url, query_words)
+                            if result:
+                                best_content, best_url = result
+                                break
+                except Exception as e:
+                    print(f"DEBUG: Erreur extraction {url}: {e}")
+                    continue
+            
+            # Si on a trouvé du contenu pertinent, le retourner
+            if best_content and best_url:
+                return f"📄 Source: {best_url}\n\n{best_content}"
+            
+            # Sinon, si on a au moins des URLs, essayer la première
+            if urls:
+                print(f"DEBUG: Pas de contenu pertinent, essai exploration du premier site...")
+                result = explore_website(urls[0], query_words)
+                if result:
+                    content, url = result
+                    return f"📄 Source: {url}\n\n{content}"
         
-        # Récupérer le contenu de la page la plus pertinente
-        content = fetch_webpage(best_url)
-        
-        return f"📄 Source: {best_url}\n\n{content}"
+        # Si après avoir essayé 20 résultats on n'a rien trouvé
+        return f"❌ Impossible de trouver des résultats pertinents pour '{query}' après avoir exploré les sites web."
     
     except Exception as e:
+        print(f"DEBUG search_and_summarize: {type(e).__name__}: {str(e)}")
         return f"❌ Erreur lors de la recherche et résumé: {e}"
 
 AVAILABLE_TOOLS = {
-    "search_and_summarize": search_and_summarize
+    "search_and_summarize": search_and_summarize,
+    "save_note": save_note,
+    "search_notes": search_notes,
+    "list_notes": list_notes,
 }
 
 
