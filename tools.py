@@ -1,14 +1,16 @@
-
+import requests
 
 # ── Définition JSON de l'outil pour le LLM ────────────────────────────────────
 TOOLS_LIST = [
     {
         "type": "function",
         "function": {
-            "name": "search_and_summarize","description": (
-
-                "Utilise cet outil pour toute recherche web"
-                "récentes, des actualités, des prix, ou tout fait incertain. "
+            "name": "search_and_summarize",
+            "description": (
+                "Utilise cet outil pour toute recherche web récente, "
+                "actualités, prix, faits incertains ou informations nécessitant "
+                "une vérification. Recherche sur le web puis extrait le contenu "
+                "de la page la plus pertinente."
             ),
             "parameters": {
                 "type": "object",
@@ -154,7 +156,9 @@ def search_and_summarize(query):
     except Exception as e:
         return f"❌ Erreur lors de la recherche et résumé: {e}"
 
-
+AVAILABLE_TOOLS = {
+    "search_and_summarize": search_and_summarize
+}
 
 
 
